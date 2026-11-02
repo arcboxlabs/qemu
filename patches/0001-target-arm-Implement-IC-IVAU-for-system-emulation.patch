@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redwhisk <254472559+redwhisk@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 14:49:08 +0000
+Subject: [PATCH 1/2] target/arm: Implement IC IVAU for system emulation
+
+TCG drops its translations of guest memory when the guest CPU or one of
+QEMU's own devices writes that memory, which is why the instruction
+cache maintenance instructions can be NOPs. Memory that another process
+shares with QEMU is the exception. When a vhost-user back-end writes
+guest RAM held in a shared memory backend, for example virtio-fs
+reading a file into the guest page cache, TCG never sees the write.
+The guest then keeps executing stale translations of whatever was
+previously on those physical pages, even after it performs the
+IC IVAU the architecture requires before executing instructions
+written by another observer.
+
+Make IC IVAU invalidate the translations of the instruction cache line
+in system emulation too, as user mode already does for JITs that
+dual-map their code. The VA is translated through the current
+translation regime as a non-faulting read; if it does not reach RAM,
+nothing is done. The TB does not need to end after the instruction:
+the new instructions only have to be visible after a later context
+synchronization event, and ISB ends the TB.
+
+IC IALLU and IC IALLUIS remain NOPs. A guest with a PIPT instruction
+cache maintains the executable pages other agents wrote line by line
+with IC IVAU (Linux does so when it maps such a page executable), and
+dropping every translation on each IALLU would be expensive for guests
+running on VIPT models.
+
+Signed-off-by: redwhisk <254472559+redwhisk@users.noreply.github.com>
+Co-authored-by: Amp <amp@ampcode.com>
+---
+ target/arm/helper.c | 54 ++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index 5d31c551e..14626773e 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -19,6 +19,7 @@
+ #include "qemu/bitops.h"
+ #include "qemu/qemu-print.h"
+ #include "exec/cputlb.h"
++#include "exec/tlb-flags.h"
+ #include "exec/translation-block.h"
+ #include "hw/irq.h"
+ #include "system/cpu-timers.h"
+@@ -3517,6 +3518,48 @@ static void ic_ivau_write(CPUARMState *env, const ARMCPRegInfo *ri,
+ 
+     mmap_unlock();
+ }
++#else
++/*
++ * `IC IVAU` drops the translations of the instruction cache line.
++ *
++ * Writes by the guest CPU or by QEMU's own devices already invalidate the
++ * translations of the memory they modify, but memory that another process
++ * shares with QEMU (for example guest RAM in a shared memory backend that a
++ * vhost-user back-end writes) can change without QEMU seeing it. A guest
++ * performs this maintenance before executing code another agent wrote, so
++ * treat it as the point at which such code becomes visible.
++ *
++ * The VA is translated with the current translation regime as a read,
++ * without raising faults: if it does not translate to RAM nothing is done,
++ * just as a cache maintenance instruction on an unmapped address has no
++ * architected effect.
++ */
++static void ic_ivau_write(CPUARMState *env, const ARMCPRegInfo *ri,
++                          uint64_t value)
++{
++#ifdef CONFIG_TCG
++    ARMCPU *cpu = env_archcpu(env);
++    uint64_t line_size = 4 << extract32(cpu->ctr, 0, 4);
++    vaddr start = value & ~(line_size - 1);
++    void *host;
++    int flags;
++
++    /* A line never crosses a page. */
++    flags = probe_access_full_mmu(env, start, 0, MMU_DATA_LOAD,
++                                  arm_env_mmu_index(env), &host, NULL);
++    if (!(flags & (TLB_INVALID_MASK | TLB_MMIO)) && host) {
++        ram_addr_t ram_addr = qemu_ram_addr_from_host(host);
++
++        if (ram_addr != RAM_ADDR_INVALID) {
++            tb_invalidate_phys_range(env_cpu(env), ram_addr,
++                                     ram_addr + line_size - 1);
++        }
++    }
++#else
++    /* Handled by hardware accelerator. */
++    g_assert_not_reached();
++#endif /* CONFIG_TCG */
++}
+ #endif
+ 
+ static const ARMCPRegInfo v8_cp_reginfo[] = {
+@@ -3560,7 +3603,8 @@ static const ARMCPRegInfo v8_cp_reginfo[] = {
+       .access = PL1_R, .type = ARM_CP_CURRENTEL },
+     /*
+      * Instruction cache ops. All of these except `IC IVAU` NOP because we
+-     * don't emulate caches.
++     * don't emulate caches. `IC IVAU` invalidates translations, see
++     * ic_ivau_write().
+      */
+     { .name = "IC_IALLUIS", .state = ARM_CP_STATE_AA64,
+       .opc0 = 1, .opc1 = 0, .crn = 7, .crm = 1, .opc2 = 0,
+@@ -3579,10 +3623,14 @@ static const ARMCPRegInfo v8_cp_reginfo[] = {
+       .accessfn = access_tocu,
+ #ifdef CONFIG_USER_ONLY
+       .type = ARM_CP_NO_RAW,
+-      .writefn = ic_ivau_write
+ #else
+-      .type = ARM_CP_NOP
++      /*
++       * No need to end the TB: the new instructions are only guaranteed
++       * after a later context synchronization event, and ISB ends the TB.
++       */
++      .type = ARM_CP_NO_RAW | ARM_CP_SUPPRESS_TB_END,
+ #endif
++      .writefn = ic_ivau_write
+     },
+     /* Cache ops: all NOPs since we don't emulate caches */
+     { .name = "DC_IVAC", .state = ARM_CP_STATE_AA64,
