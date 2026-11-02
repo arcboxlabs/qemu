@@ -4,7 +4,8 @@ A minimal, relocatable `qemu-system-aarch64` for Apple Silicon macOS. ArcBox
 downloads it on demand to run its system VM under QEMU TCG on Macs without
 hardware virtualization (cloud Macs and CI runners that are themselves VMs).
 
-- QEMU 10.2.4, `aarch64-softmmu` only, TCG only
+- QEMU 10.2.4, `aarch64-softmmu` only, TCG only, plus the two
+  [patches](#patches) in `patches/`
 - vhost-user on (`vhost-user-fs-pci`, `vhost-user-vsock-pci`), vhost-net off
 - glib 2.88.4 as a bundled dylib (LGPL-2.1); nothing from Homebrew
 - macOS 15.0 or later, arm64
@@ -22,7 +23,7 @@ it into an empty directory (ArcBox uses `~/.arcbox/runtime/qemu/<version>/`):
 bin/qemu-system-aarch64        the emulator; LC_RPATH @executable_path/../lib
 lib/libglib-2.0.0.dylib        install name @rpath/libglib-2.0.0.dylib
 licenses/<component>/...       QEMU, glib, pcre2, proxy-libintl, dtc, berkeley-softfloat-3
-BUILD-INFO.json                package version, QEMU/glib versions, configure options, commit
+BUILD-INFO.json                package version, QEMU/glib versions, configure options, patches, commit
 ```
 
 The tree can be moved anywhere. Every Mach-O links only macOS system
@@ -33,6 +34,11 @@ no firmware, ROM or keymap.
 ### Running it
 
 - No environment variables and no `-L` are needed.
+- Use `-cpu max,pauth-impdef=on,dic=off`. `dic=off` is required whenever a
+  vhost-user back-end writes guest RAM (virtio-fs does): it makes the guest
+  issue `IC IVAU` for code it maps, which drops QEMU's stale translations
+  (see [Patches](#patches)). `pauth-impdef=on` makes pointer authentication
+  cheap to emulate. Other `max` options such as `sve=off` can be added.
 - Add `romfile=` to every `virtio-net-pci` device. Otherwise QEMU looks for
   the `efi-virtio.rom` option ROM (only used by UEFI network boot) and fails
   with `failed to find romfile "efi-virtio.rom"`.
@@ -58,6 +64,33 @@ Gatekeeper looks the ticket up online when it assesses a quarantined copy.
 Files the daemon downloads itself carry no quarantine attribute and are not
 assessed. An offline import should verify the sha256 and then remove
 `com.apple.quarantine` from the extracted tree.
+
+## Patches
+
+`build.sh` applies `patches/*.patch`, in order, to the QEMU release tarball.
+They are `git format-patch` output against the tarball, written to be sent
+upstream. Changing the set re-extracts the source and reconfigures.
+
+TCG drops its translations of guest memory when the guest CPU or a QEMU
+device writes it, so QEMU treats the instruction cache maintenance
+instructions as no-ops. A vhost-user back-end writes guest RAM through the
+shared memory backend without QEMU seeing it. When virtio-fs reads a file
+into page-cache pages that used to hold code, the guest keeps running the old
+translations of those physical pages, even though the file data is correct.
+
+- `0001-target-arm-Implement-IC-IVAU-for-system-emulation.patch`:
+  `IC IVAU` translates its VA through the current translation regime, without
+  faulting, and invalidates the translation blocks on that line of RAM. User
+  mode already does this. `IC IALLU`/`IALLUIS` stay no-ops: Linux does not
+  use them for page-cache code on a PIPT instruction cache.
+- `0002-target-arm-Add-a-dic-property-to-cpu-max.patch`: `-cpu max` reports
+  `CTR_EL0.DIC=1`, so Linux never issues `IC IVAU`. `dic=off` clears the bit
+  (IDC stays 1). Linux then invalidates every line of a page-cache folio the
+  first time it maps it executable (`__sync_icache_dcache`), and JITs that
+  use `__clear_cache` (FEX does) invalidate the code they write.
+
+The boot test checks that the guest sees DIC=0. A build without the patches
+rejects `dic=off` with `Property 'max-arm-cpu.dic' not found`.
 
 ## Development build (unsigned)
 

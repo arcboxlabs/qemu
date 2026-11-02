@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Boot an ArcBox arm64 kernel with -kernel under the packaged QEMU.
 
-Uses the device set the ArcBox daemon uses: guest RAM in memory-backend-shm,
-virtio-blk-pci, a virtio-net-pci NIC on a SOCK_DGRAM socketpair passed by fd,
-virtio-serial-pci + virtconsole, virtio-rng-pci and QMP. With no root
-filesystem the kernel panics once it has probed its devices; panic=-1 plus
--no-reboot makes QEMU exit, so the test ends on its own.
+Uses the -cpu and device set the ArcBox daemon uses: guest RAM in
+memory-backend-shm, virtio-blk-pci, a virtio-net-pci NIC on a SOCK_DGRAM
+socketpair passed by fd, virtio-serial-pci + virtconsole, virtio-rng-pci and
+QMP. With no root filesystem the kernel panics once it has probed its
+devices; panic=-1 plus -no-reboot makes QEMU exit, so the test ends on its
+own.
 
 Usage: boot-test.py QEMU_BINARY KERNEL
 """
@@ -61,7 +62,10 @@ def main():
 
         cmd = [
             qemu,
-            "-M", "virt,memory-backend=ram", "-accel", "tcg", "-cpu", "max",
+            # The -cpu ArcBox uses: dic=off (patches/0002) makes the guest
+            # issue IC IVAU, which patches/0001 turns into TB invalidation.
+            "-M", "virt,memory-backend=ram", "-accel", "tcg",
+            "-cpu", "max,pauth-impdef=on,dic=off",
             "-smp", "2", "-m", "512M",
             "-object", "memory-backend-shm,id=ram,size=512M,share=on",
             "-nodefaults", "-display", "none", "-no-reboot",
@@ -111,6 +115,10 @@ def main():
 
         expect = {
             "kernel banner on ttyAMA0": "Linux version" in log,
+            "guest sees CTR_EL0.DIC=0 (dic=off), IDC=1": (
+                "Data cache clean to the PoU not required" in log
+                and "Instruction cache invalidation not required" not in log
+            ),
             "virtio-blk probed (vda)": "[vda]" in log,
             "guest enabled all four virtio-pci devices": all(
                 f"virtio-pci 0000:00:0{slot}.0: enabling device" in log for slot in "3456"

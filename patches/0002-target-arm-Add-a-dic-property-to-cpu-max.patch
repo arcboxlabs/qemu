@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: redwhisk <254472559+redwhisk@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 14:49:43 +0000
+Subject: [PATCH 2/2] target/arm: Add a 'dic' property to -cpu max
+
+In system emulation -cpu max reports CTR_EL0.DIC, so a guest never
+issues IC IVAU, and the previous patch cannot help it when another
+process writes its RAM. Add a 'dic' property, so that a user of such a
+setup (vhost-user back-ends with a shared memory backend) can ask the
+guest to perform the maintenance with dic=off. CTR_EL0.IDC is left as
+it is: data cache maintenance has no effect on translations.
+
+Signed-off-by: redwhisk <254472559+redwhisk@users.noreply.github.com>
+Co-authored-by: Amp <amp@ampcode.com>
+---
+ docs/system/arm/cpu-features.rst | 11 +++++++++++
+ target/arm/tcg/cpu64.c           | 13 +++++++++++++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/docs/system/arm/cpu-features.rst b/docs/system/arm/cpu-features.rst
+index 024119449..8f84ac4ef 100644
+--- a/docs/system/arm/cpu-features.rst
++++ b/docs/system/arm/cpu-features.rst
+@@ -228,6 +228,17 @@ and QARMA3 algorithms have good cryptographic properties, but can
+ be quite slow to emulate.  The impdef algorithm used by QEMU is
+ non-cryptographic but significantly faster.
+ 
++``dic``
++  Report ``CTR_EL0.DIC``, which tells the guest that it does not need to
++  invalidate the instruction cache (``IC IVAU``) to make written data
++  visible to instruction fetches.  Enabled by default for ``-cpu max`` in
++  system emulation.
++  QEMU already drops its translations of memory that the guest CPU or a
++  QEMU device writes, but not of memory written by another process that
++  shares guest RAM, such as a vhost-user back-end using a shared memory
++  backend.  Use ``dic=off`` in that case, so that the guest's ``IC IVAU``
++  drops the stale translations.
++
+ SVE CPU Properties
+ ==================
+ 
+diff --git a/target/arm/tcg/cpu64.c b/target/arm/tcg/cpu64.c
+index 687195638..9e1f2c371 100644
+--- a/target/arm/tcg/cpu64.c
++++ b/target/arm/tcg/cpu64.c
+@@ -149,6 +149,18 @@ static void cpu_max_set_sve_max_vq(Object *obj, Visitor *v, const char *name,
+     cpu->sve_max_vq = max_vq;
+ }
+ 
++static bool cpu_max_get_dic(Object *obj, Error **errp)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++    return FIELD_EX64(cpu->ctr, CTR_EL0, DIC);
++}
++
++static void cpu_max_set_dic(Object *obj, bool value, Error **errp)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++    cpu->ctr = FIELD_DP64(cpu->ctr, CTR_EL0, DIC, value);
++}
++
+ static bool cpu_arm_get_rme(Object *obj, Error **errp)
+ {
+     ARMCPU *cpu = ARM_CPU(obj);
+@@ -1389,6 +1401,7 @@ void aarch64_max_tcg_initfn(Object *obj)
+     aarch64_add_sme_properties(obj);
+     object_property_add(obj, "sve-max-vq", "uint32", cpu_max_get_sve_max_vq,
+                         cpu_max_set_sve_max_vq, NULL, NULL);
++    object_property_add_bool(obj, "dic", cpu_max_get_dic, cpu_max_set_dic);
+     object_property_add_bool(obj, "x-rme", cpu_arm_get_rme, cpu_arm_set_rme);
+     object_property_add(obj, "x-l0gptsz", "uint32", cpu_max_get_l0gptsz,
+                         cpu_max_set_l0gptsz, NULL, NULL);

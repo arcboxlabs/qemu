@@ -81,8 +81,21 @@ export PATH="$BUILD_DIR/venv/bin:$PATH"
 
 fetch "https://download.qemu.org/qemu-$QEMU_VERSION.tar.xz" "$QEMU_SHA256" "qemu-$QEMU_VERSION.tar.xz"
 fetch "https://download.gnome.org/sources/glib/${GLIB_VERSION%.*}/glib-$GLIB_VERSION.tar.xz" "$GLIB_SHA256" "glib-$GLIB_VERSION.tar.xz"
-unpack "$DL/qemu-$QEMU_VERSION.tar.xz" "$QEMU_SRC"
 unpack "$DL/glib-$GLIB_VERSION.tar.xz" "$GLIB_SRC"
+
+# QEMU gets patches/*.patch on top of the release tarball. Any change to the
+# set re-extracts the source, so a dropped patch cannot linger.
+PATCHES=("$ROOT"/patches/*.patch)
+PATCHES_SUM="$(cat "${PATCHES[@]}" | shasum -a 256 | cut -c1-16)"
+if [ "$(cat "$QEMU_SRC/.arcbox-patches" 2>/dev/null)" != "$PATCHES_SUM" ]; then
+  rm -rf "$QEMU_SRC"
+  unpack "$DL/qemu-$QEMU_VERSION.tar.xz" "$QEMU_SRC"
+  for p in "${PATCHES[@]}"; do
+    log "Applying $(basename "$p")"
+    patch -d "$QEMU_SRC" -p1 --forward --batch --quiet <"$p"
+  done
+  echo "$PATCHES_SUM" >"$QEMU_SRC/.arcbox-patches"
+fi
 
 # Only our own prefix is visible to pkg-config.
 unset PKG_CONFIG_PATH
@@ -109,14 +122,14 @@ if [ ! -f "$DEPS/lib/pkgconfig/glib-2.0.pc" ]; then
 fi
 
 # --- QEMU -------------------------------------------------------------------
-# Reconfigure from scratch whenever the arguments change.
+# Reconfigure from scratch whenever the arguments or the patches change.
 STAMP="$BUILD_DIR/qemu-build/arcbox-configure-args"
-if [ "$(cat "$STAMP" 2>/dev/null)" != "${QEMU_CONFIGURE_ARGS[*]}" ]; then
+if [ "$(cat "$STAMP" 2>/dev/null)" != "${QEMU_CONFIGURE_ARGS[*]} $PATCHES_SUM" ]; then
   log "Configuring QEMU $QEMU_VERSION"
   rm -rf "$BUILD_DIR/qemu-build"
   mkdir -p "$BUILD_DIR/qemu-build"
   (cd "$BUILD_DIR/qemu-build" && "$QEMU_SRC/configure" "${QEMU_CONFIGURE_ARGS[@]}")
-  echo "${QEMU_CONFIGURE_ARGS[*]}" >"$STAMP"
+  echo "${QEMU_CONFIGURE_ARGS[*]} $PATCHES_SUM" >"$STAMP"
 fi
 log "Building QEMU $QEMU_VERSION"
 ninja -C "$BUILD_DIR/qemu-build" -j "$JOBS" qemu-system-aarch64-unsigned
@@ -187,9 +200,11 @@ cp "$QEMU_SRC"/subprojects/berkeley-softfloat-3/COPYING.txt "$L/berkeley-softflo
 
 # --- Build info -------------------------------------------------------------
 COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+PATCH_NAMES="$(for p in "${PATCHES[@]}"; do basename "$p"; done)"
 python3 - "$STAGE_DIR/BUILD-INFO.json" "$VERSION" "$COMMIT" "${QEMU_CONFIGURE_ARGS[@]}" <<PY
 import json, sys
 out, version, commit, *args = sys.argv[1:]
+patches = """$PATCH_NAMES""".split()
 json.dump({
     "version": version,
     "commit": commit,
@@ -199,6 +214,7 @@ json.dump({
     "arch": "arm64",
     "executable": "bin/qemu-system-aarch64",
     "configure_args": args,
+    "patches": patches,
 }, open(out, "w"), indent=2)
 open(out, "a").write("\n")
 PY
