@@ -139,7 +139,9 @@ translation buffer with `MAP_JIT`.
 
 `package.sh` also writes `qemu-darwin-arm64-vX.Y.Z-sources.tar`: the QEMU and
 glib release tarballs, the meson wrap sources glib pulled in (pcre2,
-proxy-libintl, libffi), QEMU's `dtc` subproject, and this repository.
+proxy-libintl, libffi), QEMU's `dtc` subproject, and this repository. A
+release publishes it next to the package, both on the CDN and on the GitHub
+Release.
 
 ## CI
 
@@ -186,6 +188,7 @@ arch.arm64.sha256 = "..."
 
 and downloads `{cdn}/v{version}/qemu-darwin-arm64-v{version}.tar.gz`
 (mirror: `https://github.com/arcboxlabs/qemu/releases/download/v{version}/qemu-darwin-arm64-v{version}.tar.gz`).
+The corresponding source is `{cdn}/v{version}/qemu-darwin-arm64-v{version}-sources.tar`.
 
 ## Configure options
 
