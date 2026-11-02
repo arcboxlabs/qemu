@@ -183,8 +183,10 @@ jobs:
   # ==========================================================================
   # Publish the package to Cloudflare R2 (tag pushes only):
   #   boot.arcboxcdn.com/qemu/v{version}/qemu-darwin-arm64-v{version}.tar.gz
-  # Keys are versioned and never reused; there is no mutable index, since
-  # arcbox pins the version and sha256 in assets.lock.
+  #   boot.arcboxcdn.com/qemu/v{version}/qemu-darwin-arm64-v{version}-sources.tar
+  # The corresponding source sits next to the binaries it builds (GPL-2.0
+  # section 3). Keys are versioned and never reused; there is no mutable
+  # index, since arcbox pins the version and sha256 in assets.lock.
   # ==========================================================================
   upload-cdn:
     name: Upload to R2
@@ -202,8 +204,10 @@ jobs:
       - name: Prepare upload directory
         run: |
           VERSION="${{ needs.build.outputs.version }}"
+          NAME="qemu-darwin-arm64-v$VERSION"
           mkdir -p "cdn-staging/v$VERSION"
-          cp "dist/qemu-darwin-arm64-v$VERSION.tar.gz" "dist/qemu-darwin-arm64-v$VERSION.tar.gz.sha256" \
+          cp "dist/$NAME.tar.gz" "dist/$NAME.tar.gz.sha256" \
+            "dist/$NAME-sources.tar" "dist/$NAME-sources.tar.sha256" \
             "cdn-staging/v$VERSION/"
           find cdn-staging -type f | sort
 
@@ -218,3 +222,4 @@ jobs:
           destination: qemu
           verify-urls: |
             https://boot.arcboxcdn.com/qemu/v${{ needs.build.outputs.version }}/qemu-darwin-arm64-v${{ needs.build.outputs.version }}.tar.gz
+            https://boot.arcboxcdn.com/qemu/v${{ needs.build.outputs.version }}/qemu-darwin-arm64-v${{ needs.build.outputs.version }}-sources.tar

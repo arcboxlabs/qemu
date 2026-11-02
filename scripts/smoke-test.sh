@@ -7,8 +7,11 @@
 # then checks that:
 #   - every Mach-O links only macOS system libraries or @rpath/ dylibs that
 #     are in the package, and searches only @executable_path/@loader_path;
+#   - it holds bin/, lib/, licenses/ and BUILD-INFO.json, and only regular
+#     files and directories;
 #   - every Mach-O targets MACOSX_DEPLOYMENT_TARGET and has a valid signature
-#     (with EXPECT_TEAM_ID set: that team and the hardened runtime);
+#     (with EXPECT_TEAM_ID set: the daemon's Developer ID requirement for that
+#     team, the executable's identifier, and the hardened runtime);
 #   - the devices, backends and accelerator ArcBox needs are compiled in;
 #   - with KERNEL given, scripts/boot-test.py boots it with -kernel.
 
@@ -33,6 +36,13 @@ tar -xzf "$PACKAGE" -C "$DIR"
 QEMU="$DIR/bin/qemu-system-aarch64"
 echo "Extracted to $DIR"
 (cd "$DIR" && find . -type f | sort)
+
+# The daemon accepts only regular files and directories, and needs these four.
+other="$(tar -tvzf "$PACKAGE" | grep -vE '^[-d]' || true)$(tar -tvzf "$PACKAGE" | grep -E ' link to ' || true)"
+[ -z "$other" ] || fail "package has entries that are not regular files or directories: $other"
+for top in bin lib licenses BUILD-INFO.json; do
+  [ -e "$DIR/$top" ] || fail "package has no $top"
+done
 
 MACHOS=()
 while IFS= read -r f; do
@@ -64,9 +74,11 @@ for f in "${MACHOS[@]}"; do
 
   codesign --verify --strict "$f" 2>/dev/null || fail "$rel: invalid code signature"
   if [ -n "${EXPECT_TEAM_ID:-}" ]; then
-    info="$(codesign -dv "$f" 2>&1)"
-    grep -q "^TeamIdentifier=$EXPECT_TEAM_ID\$" <<<"$info" || fail "$rel: not signed by team $EXPECT_TEAM_ID"
-    grep -q 'flags=.*runtime' <<<"$info" || fail "$rel: hardened runtime not enabled"
+    # The requirement the ArcBox daemon checks before it runs the package.
+    req="anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"$EXPECT_TEAM_ID\""
+    [ "$f" = "$QEMU" ] && req="$req and identifier \"com.arcboxlabs.qemu.system-aarch64\""
+    codesign --verify --strict -R="$req" "$f" || fail "$rel: does not satisfy $req"
+    grep -q 'flags=.*runtime' <<<"$(codesign -dv "$f" 2>&1)" || fail "$rel: hardened runtime not enabled"
   fi
 done
 ok "${#MACHOS[@]} Mach-O files: system or bundled dylibs only, minos $MACOSX_DEPLOYMENT_TARGET, signatures valid"
