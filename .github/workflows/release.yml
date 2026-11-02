@@ -1,0 +1,220 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Sign and notarize with the Developer ID (no release)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  APPLE_TEAM_ID: "422ACSY6Y5"
+  # Kernel the boot test starts with -kernel.
+  KERNEL_TAG: v0.0.25
+
+jobs:
+  # ==========================================================================
+  # Build, sign, notarize, package and smoke-test on Apple Silicon. Branch
+  # and PR builds stay unsigned (ad-hoc); tag pushes and `sign` dispatches
+  # get the Developer ID signature and notarization.
+  # ==========================================================================
+  build:
+    name: Build (macOS arm64)
+    runs-on: macos-26
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve build variables
+        id: vars
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev.${GITHUB_SHA::7}"
+          fi
+          SIGN=false
+          if [[ "$GITHUB_REF" == refs/tags/v* ]] || [ "${{ inputs.sign }}" = "true" ]; then
+            SIGN=true
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sign=$SIGN" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION sign=$SIGN"
+
+      - name: Install build tools
+        run: command -v pkg-config || brew install pkgconf
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: ./scripts/build.sh
+
+      - name: Import signing certificate
+        if: steps.vars.outputs.sign == 'true'
+        uses: apple-actions/import-codesign-certs@v6
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Store notarization credentials
+        if: steps.vars.outputs.sign == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          # printf, not echo: echo appends a newline, which invalidates the key.
+          mkdir -p -m 700 "$RUNNER_TEMP/private_keys"
+          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/private_keys/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/private_keys/AuthKey.p8"
+          xcrun notarytool store-credentials "arcbox-notarize" \
+            --key "$RUNNER_TEMP/private_keys/AuthKey.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER"
+          rm "$RUNNER_TEMP/private_keys/AuthKey.p8"
+
+      - name: Sign
+        if: steps.vars.outputs.sign == 'true'
+        run: |
+          ./scripts/sign.sh "Developer ID Application: ArcBox, Inc. ($APPLE_TEAM_ID)"
+
+      - name: Download test kernel
+        run: |
+          BASE="https://github.com/arcboxlabs/kernel/releases/download/$KERNEL_TAG"
+          curl -fsSLO "$BASE/kernel-arm64"
+          curl -fsSLO "$BASE/kernel-arm64.sha256"
+          shasum -a 256 -c kernel-arm64.sha256
+
+      # Temporary: settles whether TCG needs com.apple.security.cs.allow-jit
+      # under a Developer ID signature (ad-hoc signatures run without it).
+      # If this passes, drop entitlements.plist and this step.
+      - name: Probe TCG without allow-jit (informational)
+        if: steps.vars.outputs.sign == 'true'
+        continue-on-error: true
+        run: |
+          PROBE="$RUNNER_TEMP/nojit"
+          cp -R out/stage "$PROBE"
+          codesign --force --options runtime \
+            --sign "Developer ID Application: ArcBox, Inc. ($APPLE_TEAM_ID)" \
+            "$PROBE/bin/qemu-system-aarch64"
+          codesign -d --entitlements - "$PROBE/bin/qemu-system-aarch64"
+          python3 scripts/boot-test.py "$PROBE/bin/qemu-system-aarch64" kernel-arm64
+
+      - name: Notarize
+        if: steps.vars.outputs.sign == 'true'
+        run: ./scripts/notarize.sh arcbox-notarize
+
+      - name: Package
+        run: ./scripts/package.sh "${{ steps.vars.outputs.version }}"
+
+      - name: Smoke test
+        env:
+          EXPECT_TEAM_ID: ${{ steps.vars.outputs.sign == 'true' && env.APPLE_TEAM_ID || '' }}
+        run: ./scripts/smoke-test.sh "out/qemu-darwin-arm64-v${{ steps.vars.outputs.version }}.tar.gz" kernel-arm64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-darwin-arm64
+          path: |
+            out/qemu-darwin-arm64-v*
+            out/notarize-log.json
+          retention-days: 14
+
+  # ==========================================================================
+  # GitHub Release (tag pushes only).
+  # ==========================================================================
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: qemu-darwin-arm64
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: QEMU for ArcBox v${{ needs.build.outputs.version }}
+          body: |
+            ## QEMU for ArcBox v${{ needs.build.outputs.version }}
+
+            `qemu-system-aarch64` (TCG only) for Apple Silicon macOS 15.0+, signed with the ArcBox Developer ID and notarized. See `BUILD-INFO.json` in the package for the QEMU version and configure options, and the README for the layout.
+
+            ### Files
+            - `qemu-darwin-arm64-v${{ needs.build.outputs.version }}.tar.gz` (+ `.sha256`): the package
+            - `qemu-darwin-arm64-v${{ needs.build.outputs.version }}-sources.tar` (+ `.sha256`): corresponding source for the GPL/LGPL components
+          files: |
+            dist/qemu-darwin-arm64-v${{ needs.build.outputs.version }}.tar.gz
+            dist/qemu-darwin-arm64-v${{ needs.build.outputs.version }}.tar.gz.sha256
+            dist/qemu-darwin-arm64-v${{ needs.build.outputs.version }}-sources.tar
+            dist/qemu-darwin-arm64-v${{ needs.build.outputs.version }}-sources.tar.sha256
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+
+  # ==========================================================================
+  # Publish the package to Cloudflare R2 (tag pushes only):
+  #   boot.arcboxcdn.com/qemu/v{version}/qemu-darwin-arm64-v{version}.tar.gz
+  # Keys are versioned and never reused; there is no mutable index, since
+  # arcbox pins the version and sha256 in assets.lock.
+  # ==========================================================================
+  upload-cdn:
+    name: Upload to R2
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: qemu-darwin-arm64
+          path: dist
+
+      - name: Prepare upload directory
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          mkdir -p "cdn-staging/v$VERSION"
+          cp "dist/qemu-darwin-arm64-v$VERSION.tar.gz" "dist/qemu-darwin-arm64-v$VERSION.tar.gz.sha256" \
+            "cdn-staging/v$VERSION/"
+          find cdn-staging -type f | sort
+
+      - name: Publish to R2
+        uses: arcboxlabs/actions/r2-publish@v2
+        with:
+          account-id: ${{ vars.R2_ACCOUNT_ID }}
+          access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          bucket: arcboxcdn-boot
+          source-dir: cdn-staging
+          destination: qemu
+          verify-urls: |
+            https://boot.arcboxcdn.com/qemu/v${{ needs.build.outputs.version }}/qemu-darwin-arm64-v${{ needs.build.outputs.version }}.tar.gz
