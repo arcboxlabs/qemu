@@ -102,6 +102,13 @@ jobs:
             --issuer "$APPLE_API_ISSUER"
           rm "$KEY"
 
+      # sign.sh gives the executable com.apple.security.cs.allow-jit
+      # (entitlements.plist), and it is required: with split-wx off, as in
+      # every non-debug build, tcg/region.c allocates the RWX translation
+      # buffer with MAP_JIT, which the hardened runtime denies without it.
+      # This runner, like other macOS VMs with SIP disabled, does not enforce
+      # code-signing restrictions, so QEMU running here without the
+      # entitlement says nothing about a regular Mac.
       - name: Sign
         if: steps.vars.outputs.sign == 'true'
         run: |
@@ -113,21 +120,6 @@ jobs:
           curl -fsSLO "$BASE/kernel-arm64"
           curl -fsSLO "$BASE/kernel-arm64.sha256"
           shasum -a 256 -c kernel-arm64.sha256
-
-      # Temporary: settles whether TCG needs com.apple.security.cs.allow-jit
-      # under a Developer ID signature (ad-hoc signatures run without it).
-      # If this passes, drop entitlements.plist and this step.
-      - name: Probe TCG without allow-jit (informational)
-        if: steps.vars.outputs.sign == 'true'
-        continue-on-error: true
-        run: |
-          PROBE="$RUNNER_TEMP/nojit"
-          cp -R out/stage "$PROBE"
-          codesign --force --options runtime \
-            --sign "Developer ID Application: ArcBox, Inc. ($APPLE_TEAM_ID)" \
-            "$PROBE/bin/qemu-system-aarch64"
-          codesign -d --entitlements - "$PROBE/bin/qemu-system-aarch64"
-          python3 scripts/boot-test.py "$PROBE/bin/qemu-system-aarch64" kernel-arm64
 
       - name: Notarize
         if: steps.vars.outputs.sign == 'true'

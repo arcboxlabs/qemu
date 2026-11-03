@@ -2,7 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- TCG maps its translation buffer with MAP_JIT (tcg/region.c). -->
+	<!-- Required: TCG maps its RWX translation buffer with MAP_JIT
+	     (tcg/region.c, split-wx off), which the hardened runtime denies
+	     without this entitlement. See README.md. -->
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 </dict>
