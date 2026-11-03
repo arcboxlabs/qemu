@@ -161,16 +161,16 @@ Release.
 Each run builds, signs and notarizes when applicable, packages, and runs
 `smoke-test.sh` against the packaged tarball, including the boot test.
 
-Repository secrets and variables, with the same names arcbox-desktop and
-boot-assets use:
+Secrets and variables, the arcboxlabs organization's (a repository secret of
+the same name takes precedence):
 
 | Name | Kind | Used for |
 | --- | --- | --- |
 | `APPLE_CERTIFICATE_P12` | secret | Developer ID Application certificate + key, base64 `.p12` |
 | `APPLE_CERTIFICATE_PASSWORD` | secret | password of that `.p12` |
-| `NOTARY_KEY` | secret | App Store Connect API key (`.p8` contents) |
-| `NOTARY_KEY_ID` | secret | its key ID |
-| `NOTARY_ISSUER` | secret | its issuer ID |
+| `APPLE_API_KEY_BASE64` | secret | App Store Connect Team API key, base64 of the `.p8` |
+| `APPLE_API_KEY_ID` | secret | its key ID |
+| `APPLE_API_ISSUER` | secret | its issuer ID |
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | secret | R2 token with Object Read & Write on `arcboxcdn-boot` |
 | `R2_ACCOUNT_ID` | variable | Cloudflare account ID |
 
