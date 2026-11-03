@@ -137,9 +137,15 @@ EXPECT_TEAM_ID=422ACSY6Y5 ./scripts/smoke-test.sh out/qemu-darwin-arm64-v0.1.0.t
 `sign.sh` signs every Mach-O with the hardened runtime and a secure
 timestamp. The dylibs carry the same team ID as the executable, so library
 validation passes without `disable-library-validation`. Only the executable
-has entitlements: `com.apple.security.cs.allow-jit`
-([`entitlements.plist`](entitlements.plist)), because TCG maps its
-translation buffer with `MAP_JIT`.
+has an entitlement, `com.apple.security.cs.allow-jit`
+([`entitlements.plist`](entitlements.plist)), and it is required. QEMU is
+built without TCG debugging, so split-wx is off, and `tcg/region.c` then
+allocates the read-write-execute translation buffer with `mmap(MAP_JIT)` on
+Darwin, which the hardened runtime denies unless the process has this
+entitlement. macOS VMs with SIP disabled, such as GitHub's macOS runners and
+Amp's Mac satellites, do not enforce these code-signing restrictions: QEMU
+starts there without the entitlement, which is no evidence that a regular Mac
+lets it.
 
 `package.sh` also writes `qemu-darwin-arm64-vX.Y.Z-sources.tar`: the QEMU and
 glib release tarballs, the meson wrap sources glib pulled in (pcre2,
