@@ -13,6 +13,8 @@
 #     (with EXPECT_TEAM_ID set: the daemon's Developer ID requirement for that
 #     team, the executable's identifier, and the hardened runtime);
 #   - the devices, backends and accelerator ArcBox needs are compiled in;
+#   - IC IVAU drops translations of code another process wrote
+#     (scripts/ic-ivau-test.py, patches/0001);
 #   - with KERNEL given, scripts/boot-test.py boots it with -kernel.
 
 set -euo pipefail
@@ -101,6 +103,8 @@ check_listed object -object memory-backend-shm
 check_listed netdev -netdev dgram vhost-user
 check_listed accelerator -accel tcg
 if "$QEMU" -machine help | grep -q '^virt '; then ok "machine virt"; else fail "machine virt missing"; fi
+
+python3 "$ROOT/scripts/ic-ivau-test.py" "$QEMU" || FAILED=1
 
 if [ -n "$KERNEL" ]; then
   python3 "$ROOT/scripts/boot-test.py" "$QEMU" "$KERNEL" || FAILED=1

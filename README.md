@@ -89,7 +89,11 @@ translations of those physical pages, even though the file data is correct.
   first time it maps it executable (`__sync_icache_dcache`), and JITs that
   use `__clear_cache` (FEX does) invalidate the code they write.
 
-The boot test checks that the guest sees DIC=0. A build without the patches
+The smoke test guards both patches.
+[`scripts/ic-ivau-test.py`](scripts/ic-ivau-test.py) maps guest RAM from a
+shared file, rewrites a routine a bare-metal guest has already run, and checks
+that the guest runs the new code after `IC IVAU`; without 0001 it runs the old
+code. The boot test checks that the guest sees DIC=0; a build without 0002
 rejects `dic=off` with `Property 'max-arm-cpu.dic' not found`.
 
 ## Development build (unsigned)
